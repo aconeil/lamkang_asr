@@ -7,9 +7,9 @@ import os
 
 directory = sys.argv[1] 
 
-with open(f"{directory}clips/transcript_map.csv", "w", newline= "") as csvfile:
+with open(f"{directory}clips/metadata.csv", "w", newline= "") as csvfile:
     csv_writer = csv.writer(csvfile)
-    csv_writer.writerow(["Annotation", "Filename"])
+    csv_writer.writerow(["transcription", "file_name"])
     for elan_file in os.listdir(directory):
         if not elan_file.endswith(".eaf"):
             continue
