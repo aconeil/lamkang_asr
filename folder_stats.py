@@ -1,3 +1,7 @@
+'''
+This program is used to calculate directory stats for lengths of audio clips. It prints the average length of a clip in a directory, the shortest clip, the longest clip and the total length of all the clips
+'''
+
 import os
 import wave
 import sys
@@ -25,4 +29,5 @@ def get_dur(folder):
     return total_length, total_files, shortest, longest
 
 total_length, total_files, shortest, longest = get_dur(folder_path)
-print(total_length/total_files, shortest, longest)
+print("average length: ", total_length/total_files, "\nshortest: ", shortest, "\nlongest: ", longest)
+print("All audio: ", total_length)
