@@ -1,16 +1,23 @@
+'''
+This script loads a dataset from a folder using the CSV in the folder.
+The dataset is used to fine-tune and test a wav2vec2 model
+python w2v2_finetune.py dataset_directory output_directory hf_repo_name
+'''
+
 import re
 import numpy as np
 from huggingface_hub import login
 import random
 import pandas as pd
 import torch
+import sys
 from evaluate import load
 from datasets import load_dataset, Audio, concatenate_datasets
 import json
 import torch
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Union
-from transformers import Wav2Vec2BertProcessor, SeamlessM4TFeatureExtractor, Wav2Vec2CTCTokenizer, Wav2Vec2BertForCTC, TrainingArguments, Trainer
+from transformers import Wav2Vec2Processor, Wav2Vec2FeatureExtractor, Wav2Vec2CTCTokenizer, Wav2Vec2ForCTC, TrainingArguments, Trainer
 
 #Use GPU if available
 if torch.cuda.is_available():
@@ -20,16 +27,16 @@ else:
     device = torch.device("cpu")
     print("Using CPU")
 
-#Replace with desired HF repo name
-repo_name = "w2v-bert-2.0-lmk_autoalign_full"
+#Third argument on CL is HF repo name
+repo_name = sys.argv[3]
 
-#Replace with desired output directory
-output_dir = "Lamkang_autoalign_full"
+#Second argument on CL is desired output directory
+output_dir = sys.argv[2]
 
-base_model = "facebook/w2v-bert-2.0"
+base_model = "facebook/wav2vec2-large-xlsr-53"
 
 #Note: ' is a character in Lamkang and not removed
-chars_to_remove_regex = "[\,\?\.\!\-\;\:\"\“\%\‘\”\�\»\«\’]"
+chars_to_remove_regex = "[\n\,\?\.\!\-\;\:\"\“\%\‘\”\�\»\«\’\@\<\>\(\)]"
 
 def remove_special_characters(batch):
     # remove special characters
@@ -43,8 +50,8 @@ def extract_all_chars(batch):
 
 def prepare_dataset(batch):
     audio = batch["audio"]
-    batch["input_features"] = processor(audio["array"], sampling_rate=audio["sampling_rate"]).input_features[0]
-    batch["input_length"] = len(batch["input_features"])
+    batch["input_values"] = processor(audio["array"], sampling_rate=audio["sampling_rate"]).input_values[0]
+    batch["input_length"] = len(batch["input_values"])
     batch["labels"] = processor(text=batch["transcription"]).input_ids
     return batch
 
@@ -61,12 +68,12 @@ def compute_metrics(pred):
 
 @dataclass
 class DataCollatorCTCWithPadding:
-    processor: Wav2Vec2BertProcessor
+    processor: Wav2Vec2Processor
     padding: Union[bool, str] = True
     def __call__(self, features: List[Dict[str, Union[List[int], torch.Tensor]]]) -> Dict[str, torch.Tensor]:
         # split inputs and labels since they have to be of different lenghts and need
         # different padding methods
-        input_features = [{"input_features": feature["input_features"]} for feature in features]
+        input_features = [{"input_values": feature["input_values"]} for feature in features]
         label_features = [{"input_ids": feature["labels"]} for feature in features]
         batch = self.processor.pad(
             input_features,
@@ -81,15 +88,24 @@ class DataCollatorCTCWithPadding:
         batch["labels"] = labels
         return batch
 
-login()
+login('INSERT_TOKEN_HERE')
 
-lmk_autoalign_full_train = dataset = load_dataset("/N/slate/aconeil/lamkang_audio/unaligned/clips", split="train")
+dir_name = sys.argv[1]
 
-lmk_autoalign_full_train = lmk_autoalign_full_train.map(remove_special_characters)
+lmk_train = load_dataset(dir_name, split="train")
 
-vocab_train = lmk_autoalign_full_train.map(extract_all_chars, batched=True, batch_size=-1, keep_in_memory=True, remove_columns=lmk_autoalign_full_train.column_names)
+lmk_test = load_dataset(dir_name, split="test")
 
-vocab_list = list(set(vocab_train["vocab"][0])) #| set(common.vocab_test["vocab"][0]))
+lmk_train = lmk_train.map(remove_special_characters)
+
+lmk_test = lmk_test.map(remove_special_characters)
+
+vocab_train = lmk_train.map(extract_all_chars, batched=True, batch_size=-1, keep_in_memory=True, remove_columns=lmk_train.column_names)
+
+
+vocab_test = lmk_test.map(extract_all_chars, batched=True, batch_size=-1, keep_in_memory=True, remove_columns=lmk_test.column_names)
+
+vocab_list = list(set(vocab_train["vocab"][0]) | set(vocab_test["vocab"][0]))
 
 vocab_dict = {v: k for k, v in enumerate(sorted(vocab_list))}
 
@@ -106,15 +122,22 @@ tokenizer = Wav2Vec2CTCTokenizer.from_pretrained("./", unk_token="[UNK]", pad_to
 
 tokenizer.push_to_hub(repo_name)
 
-feature_extractor = SeamlessM4TFeatureExtractor.from_pretrained(base_model)
+feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained(base_model)
 
-processor = Wav2Vec2BertProcessor(feature_extractor=feature_extractor, tokenizer=tokenizer)
+processor = Wav2Vec2Processor(feature_extractor=feature_extractor, tokenizer=tokenizer)
 
 processor.push_to_hub(repo_name)
 
-lmk_autoalign_full_train = lmk_autoalign_full_train.cast_column("audio", Audio(sampling_rate=16_000))
+lmk_train = lmk_train.cast_column("audio", Audio(sampling_rate=16000))
 
-lmk_autoalign_full_train = lmk_autoalign_full_train.map(prepare_dataset, remove_columns=lmk_autoalign_full_train.column_names)
+lmk_test = lmk_test.cast_column("audio", Audio(sampling_rate=16000))
+
+#uncomment to upload train datset to HuggingFace
+#lmk_train.push_to_hub("aconeil/manual_align_updated")
+
+lmk_train = lmk_train.map(prepare_dataset, remove_columns=lmk_train.column_names)
+
+lmk_test = lmk_test.map(prepare_dataset, remove_columns=lmk_test.column_names)
 
 data_collator = DataCollatorCTCWithPadding(processor=processor, padding=True)
 
@@ -122,49 +145,55 @@ wer_metric = load("wer")
 
 cer_metric = load("cer")
 
-model = Wav2Vec2BertForCTC.from_pretrained(
+#Adjust hyperparameters as fit
+model = Wav2Vec2ForCTC.from_pretrained(
     base_model,
-    attention_dropout=0.0,
-    hidden_dropout=0.0,
+    attention_dropout=0.1,
+    hidden_dropout=0.1,
     feat_proj_dropout=0.0,
-    mask_time_prob=0.0,
-    layerdrop=0.0,
+    mask_time_prob=0.05,
+    layerdrop=0.1,
     ctc_loss_reduction="mean",
-    add_adapter=True,
+    gradient_checkpointing=True,
     pad_token_id=processor.tokenizer.pad_token_id,
     vocab_size=len(processor.tokenizer),
 )
 
+#Adjust hyperparameters as fit
 training_args = TrainingArguments(
   output_dir=output_dir,
   group_by_length=True,
-  per_device_train_batch_size=16,
+  per_device_train_batch_size=8,
   gradient_accumulation_steps=2,
-  #evaluation_strategy="steps",
-  num_train_epochs=10,
+  eval_strategy="steps",
+  num_train_epochs=100,
   gradient_checkpointing=True,
   fp16=True,
-  save_steps=600,
-  #eval_steps=300,
-  logging_steps=300,
-  learning_rate=5e-5,
-  warmup_steps=500,
-  save_total_limit=2,
+  save_steps=400,
+  eval_steps=100,
+  logging_steps=50,
+  learning_rate=1e-4,
+  warmup_steps=300,
+  #weight_decay=0.01,
+  save_total_limit=10,
   push_to_hub=True,
+  load_best_model_at_end=True,
+  metric_for_best_model="cer",
+  greater_is_better=False,
 )
 
 trainer = Trainer(
     model=model,
     data_collator=data_collator,
     args=training_args,
-    #compute_metrics=compute_metrics,
-    train_dataset=lmk_autoalign_full_train,
-    #eval dataset moved for initial_train
-    #eval_dataset=common.nchlt_test,
+    compute_metrics=compute_metrics,
+    train_dataset=lmk_train,
+    eval_dataset=lmk_test,
     tokenizer=processor.feature_extractor,
 )
 
 #Option to resume from checkpoint here
-trainer.train()#resume_from_checkpoint='')
+trainer.train()#resume_from_checkpoint='PATH_TO_CHECKPOINT/')
 
 trainer.push_to_hub()
+

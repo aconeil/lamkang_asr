@@ -1,5 +1,7 @@
 #This code is based on the following tutorial: https://docs.pytorch.org/audio/stable/tutorials/forced_alignment_for_multilingual_data_tutorial.html
 
+#To run: python3 align_audio.py directory_name
+
 import sys
 import os
 import torch
@@ -34,9 +36,9 @@ def compute_alignments(waveform: torch.Tensor, transcript: List[str]):
 
 def normalize_uroman(text):
     text = text.lower()
-    text = text.replace("’", "'")
-    text = re.sub("([^a-z' ])", " ", text)
+    text = re.sub("([^a-z'])", " ", text)
     text = re.sub(' +', ' ', text)
+    print(text)
     return text.strip()
 
 def alignment_list(waveform, token_spans, num_frames, transcript, name):
@@ -64,7 +66,7 @@ def align_files(directory):
             with open(f"{directory}{file}", "r") as f:
                 text_normalized = ""
                 for line in f:
-                    text_normalized += normalize_uroman(line)
+                    text_normalized += " " + normalize_uroman(line)
             transcript = text_normalized.split() 
             tokens = tokenizer(transcript)
             emission, token_spans = compute_alignments(waveform, transcript)
